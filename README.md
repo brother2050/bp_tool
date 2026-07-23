@@ -49,6 +49,30 @@ ul.upload_dir('./mydir', '/网盘路径/mydir/')
 | 1MB大缓冲 | 减少系统调用次数 |
 | PCS API直链 | 绕过网页层开销 |
 
+### 自定义 aria2c 参数
+
+```python
+dl = BaiduPanDownloader(
+    bduss='你的BDUSS',
+    aria2_params={
+        "max-connection-per-server": 8,  # 每服务器连接数（1-16）
+        "split": 32,                      # 分块数（越大越快）
+        "min-split-size": "2M",           # 最小块大小
+        "timeout": 120,                   # 超时时间
+    }
+)
+```
+
+**可调参数：**
+
+| 参数 | 默认值 | 范围 | 说明 |
+|------|--------|------|------|
+| `max-connection-per-server` | 16 | 1-16 | 每服务器最大连接（aria2c上限16） |
+| `split` | 64 | 1-∞ | 分块数（越大越快，无上限） |
+| `min-split-size` | 1M | 1M+ | 最小块大小 |
+| `timeout` | 60 | 秒 | 下载超时 |
+| `max-tries` | 5 | 次 | 最大重试次数 |
+
 ### 速度对比
 
 | 模式 | 单文件速度 | 4文件并行 |

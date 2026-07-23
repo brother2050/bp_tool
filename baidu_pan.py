@@ -42,16 +42,16 @@ UPLOAD_CHUNK = 4 * 1024 * 1024
 DL_BUF       = 1024 * 1024        # 1MB 读写缓冲（核心优化）
 MAX_PAR      = 4                   # 并行文件数
 
-ARIA2_ARGS = [
-    "--console-log-level=warn", "--file-allocation=none",
-    "--max-connection-per-server=16",  # aria2c 上限16
-    "--split=64",                       # 文件分64块（配合多URL可超16连接）
-    "--min-split-size=1M",              # 最小1MB/块
-    "--continue=true",
-    "--auto-file-renaming=false", "--allow-overwrite=true",
-    "--timeout=60", "--retry-wait=3", "--max-tries=5",
-    "--connection-timeout=15",
-]
+# aria2c 默认参数（可通过 BaiduPanDownloader.aria2_params 覆盖）
+ARIA2_DEFAULTS = {
+    "max-connection-per-server": 16,  # 每服务器最大连接（aria2c上限16）
+    "split": 64,                       # 分块数（越大越快，无上限）
+    "min-split-size": "1M",            # 最小块大小
+    "timeout": 60,
+    "retry-wait": 3,
+    "max-tries": 5,
+    "connection-timeout": 15,
+}
 
 # ============================================================
 # 工具
@@ -280,23 +280,37 @@ class PersistDownloader:
 # ============================================================
 # aria2c 调用
 # ============================================================
-def aria2_download(url, out_dir, filename, bduss):
+def aria2_download(url, out_dir, filename, bduss, params=None):
     out_path = os.path.join(out_dir, filename)
-    # 优先使用包装脚本（解决LD_LIBRARY_PATH问题）
+    # 合并参数：默认值 + 用户自定义
+    cfg = dict(ARIA2_DEFAULTS)
+    if params:
+        cfg.update(params)
+    # 构建aria2c参数
     aria2_cmd = shutil.which("aria2c") or os.path.expanduser("~/bin/aria2c")
-    cmd = [aria2_cmd, *ARIA2_ARGS,
-           f"--dir={out_dir}", f"--out={filename}",
+    cmd = [aria2_cmd,
+           "--console-log-level=warn",
+           "--file-allocation=none",
+           "--continue=true",
+           "--auto-file-renaming=false",
+           "--allow-overwrite=true",
+           f"--dir={out_dir}",
+           f"--out={filename}",
            f"--header=Cookie: BDUSS={bduss}",
            f"--header=User-Agent: {PCS_UA}",
            url]
-    print(f"    ⚡ aria2c -x16 -s64 {filename}")
+    # 动态添加配置参数
+    for k, v in cfg.items():
+        cmd.append(f"--{k}={v}")
+    x = cfg.get("max-connection-per-server", 16)
+    s = cfg.get("split", 64)
+    print(f"    ⚡ aria2c -x{x} -s{s} {filename}")
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
         if proc.returncode == 0:
             sz = os.path.getsize(out_path) if os.path.exists(out_path) else 0
             print(f"    ✓ {filename} — {_fmt(sz)}")
             return True
-        # 打印详细错误信息
         err_out = (proc.stderr or "").strip()
         err_lines = err_out.split("\n")[-5:] if err_out else []
         print(f"    ⚠ aria2c 失败 (code={proc.returncode}): {' '.join(err_lines)[:200]}")
@@ -312,17 +326,32 @@ def aria2_download(url, out_dir, filename, bduss):
 # 百度网盘下载器
 # ============================================================
 class BaiduPanDownloader:
-    def __init__(self, bduss, stoken="", max_parallel=MAX_PAR, use_aria2=None):
+    def __init__(self, bduss, stoken="", max_parallel=MAX_PAR,
+                 use_aria2=None, aria2_params=None):
+        """
+        Args:
+            bduss: BDUSS cookie
+            stoken: STOKEN cookie（可选）
+            max_parallel: 并行下载文件数
+            use_aria2: None=自动检测, True=强制, False=禁用
+            aria2_params: dict, aria2c 参数覆盖，例如:
+                {"max-connection-per-server": 8, "split": 32}
+        """
         self.cli = HClient({"BDUSS":bduss, "STOKEN":stoken})
         self._bduss = bduss
         self._stoken = stoken
         self._mp = max_parallel
         self._dl = PersistDownloader(bduss)
+        self._aria2_params = aria2_params or {}
         if use_aria2 is None:
             self._use_aria2 = _has_aria2()
         else:
             self._use_aria2 = use_aria2
-        mode = "⚡ aria2c -x16 -s64" if self._use_aria2 else "📦 持久连接 + 1MB缓冲 + HTTP优先"
+        cfg = dict(ARIA2_DEFAULTS)
+        cfg.update(self._aria2_params)
+        x = cfg.get("max-connection-per-server", 16)
+        s = cfg.get("split", 64)
+        mode = f"⚡ aria2c -x{x} -s{s}" if self._use_aria2 else "📦 持久连接 + 1MB缓冲 + HTTP优先"
         print(f"  下载模式: {mode}")
 
     def _surl(self, url):
@@ -459,11 +488,11 @@ class BaiduPanDownloader:
             dl_urls, lp, sz, fn = args
             try:
                 if self._use_aria2:
-                    if aria2_download(dl_urls[0], save_dir, fn, self._bduss):
+                    if aria2_download(dl_urls[0], save_dir, fn, self._bduss,
+                                      params=self._aria2_params):
                         ok_cnt[0] += 1; return
                     print("    回退到内置引擎...")
                 # 内置持久连接引擎
-                # 优先用 HTTP URL
                 best_url = dl_urls[0]
                 for u in dl_urls:
                     if u.startswith("http://"):
