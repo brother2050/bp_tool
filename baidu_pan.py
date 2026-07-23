@@ -376,8 +376,9 @@ class BaiduPanDownloader:
         return self.cli.get_json(url, params=params, hdrs=headers)
 
     def _verify(self, surl, pwd):
-        """验证分享密码，自动处理验证码"""
-        for attempt in range(3):
+        """验证分享密码，自动处理验证码和限流"""
+        last_err = None
+        for attempt in range(5):
             result = self.cli.post_json(f"{PAN_BASE}/share/verify",
                 data={"pwd":pwd},
                 params={"surl":surl,"t":str(int(time.time()*1000)),
@@ -386,41 +387,43 @@ class BaiduPanDownloader:
             errno = result.get("errno", -1)
             if errno == 0:
                 return result
-            # errno=9019 或 -62 表示需要验证码
-            if errno in (9019, -62, -9):
+            last_err = result
+            # errno=9019: 请求被限流/风控，等待后重试
+            if errno == 9019:
+                wait = 3 * (attempt + 1)
+                print(f"  ⚠ 请求被限流 (errno=9019)，等待{wait}秒后重试 ({attempt+1}/5)...")
+                time.sleep(wait)
+                continue
+            # errno=-62/-9: 需要验证码
+            if errno in (-62, -9):
                 print(f"  ⚠ 需要验证码 (errno={errno})，尝试获取...")
                 captcha = self._get_captcha(surl)
-                if captcha.get("errno") == 0:
-                    vcode_str = captcha.get("vcode_str", "")
-                    vcode_img = captcha.get("vcode_img", "")
-                    if vcode_str and vcode_img:
-                        # 下载验证码图片
-                        try:
-                            img_data = self.cli.op.open(
-                                urllib.request.Request(vcode_img), timeout=10).read()
-                            # 保存到本地
-                            captcha_path = os.path.join(os.path.expanduser("~"), ".baidu_captcha.jpg")
-                            with open(captcha_path, "wb") as f:
-                                f.write(img_data)
-                            print(f"  验证码已保存到: {captcha_path}")
-                            print(f"  请查看图片并输入验证码")
-                            vcode = input("  验证码: ").strip()
-                            if vcode:
-                                # 带验证码重试
-                                result = self.cli.post_json(f"{PAN_BASE}/share/verify",
-                                    data={"pwd":pwd, "vcode":vcode, "vcode_str":vcode_str},
-                                    params={"surl":surl,"t":str(int(time.time()*1000)),
-                                            "channel":"chunlei","web":"1","app_id":PAN_APP_ID,"clienttype":"0"},
-                                    hdrs={"Referer":f"{PAN_BASE}/s/1{surl}"})
-                                if result.get("errno") == 0:
-                                    return result
-                                print(f"  ⚠ 验证码错误，重试...")
-                        except Exception as e:
-                            print(f"  ⚠ 获取验证码图片失败: {e}")
+                vcode_str = captcha.get("vcode_str", "")
+                vcode_img = captcha.get("vcode_img", "")
+                if vcode_str and vcode_img:
+                    try:
+                        img_data = self.cli.op.open(
+                            urllib.request.Request(vcode_img), timeout=10).read()
+                        captcha_path = os.path.join(os.path.expanduser("~"), ".baidu_captcha.jpg")
+                        with open(captcha_path, "wb") as f:
+                            f.write(img_data)
+                        print(f"  验证码已保存到: {captcha_path}")
+                        vcode = input("  请输入验证码: ").strip()
+                        if vcode:
+                            result = self.cli.post_json(f"{PAN_BASE}/share/verify",
+                                data={"pwd":pwd, "vcode":vcode, "vcode_str":vcode_str},
+                                params={"surl":surl,"t":str(int(time.time()*1000)),
+                                        "channel":"chunlei","web":"1","app_id":PAN_APP_ID,"clienttype":"0"},
+                                hdrs={"Referer":f"{PAN_BASE}/s/1{surl}"})
+                            if result.get("errno") == 0:
+                                return result
+                    except Exception as e:
+                        print(f"  ⚠ 获取验证码失败: {e}")
                 time.sleep(2)
             else:
+                # 其他错误直接返回
                 return result
-        return result
+        return last_err or result
 
     def _page_data(self, url):
         html = self.cli.get_text(url)
