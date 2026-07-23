@@ -383,7 +383,8 @@ class BaiduPanDownloader:
                 data={"pwd":pwd},
                 params={"surl":surl,"t":str(int(time.time()*1000)),
                         "channel":"chunlei","web":"1","app_id":PAN_APP_ID,"clienttype":"0"},
-                hdrs={"Referer":f"{PAN_BASE}/s/1{surl}"})
+                hdrs={"Referer":f"{PAN_BASE}/s/1{surl}",
+                      "Origin":PAN_BASE})
             errno = result.get("errno", -1)
             if errno == 0:
                 return result
@@ -495,20 +496,38 @@ class BaiduPanDownloader:
         surl = self._surl(share_url)
         print(f"[1/5] 验证... surl={surl}")
 
-        # 1. 验证密码
+        # 1. 验证密码（优化：先尝试直接访问页面，避免verify限流）
+        pd = None
         if password:
-            vr = self._verify(surl, password)
-            if vr.get("errno")!=0:
-                e=vr.get("errno")
-                if e==-12: raise Exception("提取码错误")
-                if e==-62: raise Exception("需要验证码")
-                raise Exception(f"验证失败 errno={e}")
-            rk = vr.get("randsk","")
-            if rk: self.cli.set_cookie("BDCLND", urllib.parse.unquote(rk))
+            # 先直接访问页面，看能否获取数据
+            try:
+                pd = self._page_data(f"{PAN_BASE}/s/1{surl}")
+                if pd.get("file_list"):
+                    print("  ✓ 直接获取页面数据成功（跳过verify）")
+                else:
+                    pd = None
+            except Exception:
+                pd = None
+
+            if not pd:
+                vr = self._verify(surl, password)
+                errno = vr.get("errno", -1)
+                if errno == 0:
+                    rk = vr.get("randsk","")
+                    if rk: self.cli.set_cookie("BDCLND", urllib.parse.unquote(rk))
+                elif errno == -12:
+                    raise Exception("提取码错误")
+                elif errno == -62:
+                    raise Exception("需要验证码")
+                else:
+                    print(f"  ⚠ verify errno={errno}，仍尝试获取页面...")
+                    rk = vr.get("randsk","")
+                    if rk: self.cli.set_cookie("BDCLND", urllib.parse.unquote(rk))
 
         # 2. 获取页面数据
         print("[2/5] 获取分享信息...")
-        pd = self._page_data(f"{PAN_BASE}/s/1{surl}")
+        if not pd:
+            pd = self._page_data(f"{PAN_BASE}/s/1{surl}")
         uk = pd.get("share_uk") or pd.get("uk"); sid = pd.get("shareid")
         bt = pd.get("bdstoken","")
         if not uk or not sid: raise Exception("分享信息获取失败")
