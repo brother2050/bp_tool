@@ -50,7 +50,6 @@ ARIA2_DEFAULTS = {
     "timeout": 60,
     "retry-wait": 3,
     "max-tries": 5,
-    "connection-timeout": 15,
 }
 
 # ============================================================
