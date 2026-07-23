@@ -40,6 +40,10 @@ class TestUnifiedDownloader:
             assert "enabled" in info
             assert "priority" in info
             assert "capabilities" in info
+            assert "platform_compatible" in info
+            assert "installed" in info
+            assert "supported_platforms" in info
+            assert "install_hint" in info
 
     def test_select_engine_preferred(self):
         dl = UnifiedDownloader(self.config)

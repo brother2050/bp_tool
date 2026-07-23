@@ -550,3 +550,51 @@ class TestAllEnginesRegistered:
             engine = EngineRegistry.get_engine(name)
             assert engine.name not in names, f"Duplicate engine name: {engine.name}"
             names.append(engine.name)
+
+    def test_all_have_platform_info(self):
+        """所有引擎都有 platforms 和 install_hint"""
+        import platform as plat
+        os_name = plat.system().lower()
+        for name in self.EXPECTED_ENGINES:
+            engine = EngineRegistry.get_engine(name)
+            assert engine is not None
+            # platforms 是列表
+            assert isinstance(engine.platforms, list), f"{name}: platforms should be list"
+            # install_hint 是字符串
+            assert isinstance(engine.install_hint, str), f"{name}: install_hint should be str"
+            # is_platform_compatible 返回 bool
+            compat = engine.is_platform_compatible()
+            assert isinstance(compat, bool), f"{name}: is_platform_compatible should return bool"
+            # 如果 platforms 非空，当前 OS 应在其中或不在
+            if engine.platforms:
+                if os_name in engine.platforms:
+                    assert compat is True
+                else:
+                    assert compat is False
+            else:
+                assert compat is True  # 空=全平台
+
+    def test_availability_info_structure(self):
+        """availability_info 返回完整结构"""
+        for name in self.EXPECTED_ENGINES:
+            engine = EngineRegistry.get_engine(name)
+            info = engine.availability_info()
+            assert "name" in info
+            assert "display_name" in info
+            assert "platform_compatible" in info
+            assert "installed" in info
+            assert "available" in info
+            assert "current_os" in info
+            assert "supported_platforms" in info
+            assert "install_hint" in info
+            # available = platform_compatible AND installed
+            assert info["available"] == (info["platform_compatible"] and info["installed"])
+
+    def test_platform_incompatible_not_available(self):
+        """平台不兼容的引擎不可用"""
+        for name in self.EXPECTED_ENGINES:
+            engine = EngineRegistry.get_engine(name)
+            if not engine.is_platform_compatible():
+                assert engine.is_available() is False
+                info = engine.availability_info()
+                assert info["available"] is False

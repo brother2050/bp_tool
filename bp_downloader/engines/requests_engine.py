@@ -7,7 +7,7 @@ requests 引擎 — Python requests 库下载器。
 import os
 import time
 from typing import List, Optional
-from ..base import DownloadEngine, DownloadRequest, DownloadResult, EngineCapability
+from ..base import DownloadEngine, DownloadRequest, DownloadResult, EngineCapability, current_os
 from ..registry import EngineRegistry
 from ..utils import infer_filename
 
@@ -32,7 +32,17 @@ class RequestsEngine(DownloadEngine):
             EngineCapability.HEADER_CUSTOM,
         ]
 
+    @property
+    def platforms(self) -> list:
+        return []  # Python 库，全平台
+
+    @property
+    def install_hint(self) -> str:
+        return "pip install requests"
+
     def is_available(self) -> bool:
+        if not self.is_platform_compatible():
+            return False
         try:
             import requests  # noqa: F401
             return True

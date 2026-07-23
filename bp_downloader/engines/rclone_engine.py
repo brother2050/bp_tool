@@ -6,7 +6,7 @@ rclone 引擎 — 云存储同步/下载工具。
 
 import os
 from typing import List, Optional
-from ..base import DownloadEngine, DownloadRequest, DownloadResult, EngineCapability
+from ..base import DownloadEngine, DownloadRequest, DownloadResult, EngineCapability, current_os
 from ..registry import EngineRegistry
 from ..utils import run_command, check_command
 
@@ -33,7 +33,24 @@ class RcloneEngine(DownloadEngine):
             EngineCapability.PARALLEL,
         ]
 
+    @property
+    def platforms(self) -> list:
+        return []  # 全平台
+
+    @property
+    def install_hint(self) -> str:
+        os_name = current_os()
+        if os_name == "linux":
+            return "curl https://rclone.org/install.sh | sudo bash"
+        elif os_name == "darwin":
+            return "brew install rclone"
+        elif os_name == "windows":
+            return "scoop install rclone / choco install rclone"
+        return "https://rclone.org/downloads/"
+
     def is_available(self) -> bool:
+        if not self.is_platform_compatible():
+            return False
         return check_command("rclone")
 
     def validate_request(self, request: DownloadRequest) -> Optional[str]:

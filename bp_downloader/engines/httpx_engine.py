@@ -7,7 +7,7 @@ httpx 引擎 — 现代异步 HTTP 客户端。
 import os
 import time
 from typing import List, Optional
-from ..base import DownloadEngine, DownloadRequest, DownloadResult, EngineCapability
+from ..base import DownloadEngine, DownloadRequest, DownloadResult, EngineCapability, current_os
 from ..registry import EngineRegistry
 from ..utils import infer_filename
 
@@ -32,7 +32,17 @@ class HttpxEngine(DownloadEngine):
             EngineCapability.HEADER_CUSTOM,
         ]
 
+    @property
+    def platforms(self) -> list:
+        return []  # Python 库，全平台
+
+    @property
+    def install_hint(self) -> str:
+        return "pip install httpx[http2]"
+
     def is_available(self) -> bool:
+        if not self.is_platform_compatible():
+            return False
         try:
             import httpx  # noqa: F401
             return True

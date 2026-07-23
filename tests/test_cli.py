@@ -143,6 +143,9 @@ class TestMainFunction:
         captured = capsys.readouterr()
         assert "Engine" in captured.out
         assert "Status" in captured.out
+        assert "Platform" in captured.out
+        assert "Install Hint" in captured.out
+        assert "Current OS" in captured.out
 
     def test_engines_json(self, capsys):
         result = main(["engines", "--json"])

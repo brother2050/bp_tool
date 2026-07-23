@@ -153,18 +153,28 @@ def cmd_engines(args, config):
         print(json.dumps(engines, indent=2, ensure_ascii=False))
         return 0
 
-    print(f"{'Engine':<20} {'Status':<12} {'Enabled':<10} {'Priority':<10} {'Capabilities'}")
-    print("-" * 90)
+    import platform as plat
+    print(f"Current OS: {plat.system()}")
+    print()
+    print(f"{'Engine':<18} {'Status':<14} {'Platform':<10} {'Enabled':<9} {'Prio':<6} {'Install Hint'}")
+    print("-" * 100)
     for name, info in sorted(engines.items()):
-        status = "✓ available" if info["available"] else "✗ missing"
+        if info["available"]:
+            status = "✓ available"
+        elif not info["platform_compatible"]:
+            status = "⊘ unsupported"
+        elif info["installed"]:
+            status = "⚠ disabled"
+        else:
+            status = "✗ missing"
         enabled = "yes" if info["enabled"] else "no"
-        caps = ", ".join(info["capabilities"][:4])
-        if len(info["capabilities"]) > 4:
-            caps += f" +{len(info['capabilities']) - 4}"
-        print(f"{name:<20} {status:<12} {enabled:<10} {info['priority']:<10} {caps}")
+        platforms = ", ".join(info["supported_platforms"])
+        hint = info.get("install_hint", "")
+        print(f"{name:<18} {status:<14} {platforms:<10} {enabled:<9} {info['priority']:<6} {hint}")
 
     available = sum(1 for e in engines.values() if e["available"])
-    print(f"\nTotal: {len(engines)} engines, {available} available")
+    incompatible = sum(1 for e in engines.values() if not e["platform_compatible"])
+    print(f"\nTotal: {len(engines)} engines, {available} available, {incompatible} platform-incompatible")
     return 0
 
 

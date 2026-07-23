@@ -6,7 +6,7 @@ megatools 引擎 — Mega.nz 下载工具。
 
 import os
 from typing import List, Optional
-from ..base import DownloadEngine, DownloadRequest, DownloadResult, EngineCapability
+from ..base import DownloadEngine, DownloadRequest, DownloadResult, EngineCapability, current_os
 from ..registry import EngineRegistry
 from ..utils import run_command, check_command, infer_filename
 
@@ -31,7 +31,22 @@ class MegatoolsEngine(DownloadEngine):
             EngineCapability.PROXY,
         ]
 
+    @property
+    def platforms(self) -> list:
+        return ["linux", "darwin"]  # 无原生 Windows 支持
+
+    @property
+    def install_hint(self) -> str:
+        os_name = current_os()
+        if os_name == "linux":
+            return "apt install megatools / yum install megatools"
+        elif os_name == "darwin":
+            return "brew install megatools"
+        return "https://megatools.megous.com/ (不支持 Windows)"
+
     def is_available(self) -> bool:
+        if not self.is_platform_compatible():
+            return False
         return check_command("megadl") or check_command("megaget")
 
     def validate_request(self, request: DownloadRequest) -> Optional[str]:

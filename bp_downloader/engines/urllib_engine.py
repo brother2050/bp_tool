@@ -9,7 +9,7 @@ import time
 import urllib.request
 import urllib.error
 from typing import List, Optional
-from ..base import DownloadEngine, DownloadRequest, DownloadResult, EngineCapability
+from ..base import DownloadEngine, DownloadRequest, DownloadResult, EngineCapability, current_os
 from ..registry import EngineRegistry
 from ..utils import infer_filename, sanitize_filename
 
@@ -33,6 +33,14 @@ class UrllibEngine(DownloadEngine):
             EngineCapability.PROXY,
             EngineCapability.HEADER_CUSTOM,
         ]
+
+    @property
+    def platforms(self) -> list:
+        return []  # Python 标准库，全平台
+
+    @property
+    def install_hint(self) -> str:
+        return "无需安装 (Python 标准库)"
 
     def is_available(self) -> bool:
         return True  # 标准库，始终可用

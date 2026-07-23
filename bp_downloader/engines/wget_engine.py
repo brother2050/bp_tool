@@ -7,7 +7,7 @@ wget 引擎 — 经典 GNU 下载器。
 import os
 import re
 from typing import List, Optional
-from ..base import DownloadEngine, DownloadRequest, DownloadResult, EngineCapability
+from ..base import DownloadEngine, DownloadRequest, DownloadResult, EngineCapability, current_os
 from ..registry import EngineRegistry
 from ..utils import run_command, check_command, infer_filename
 
@@ -34,7 +34,24 @@ class WgetEngine(DownloadEngine):
             EngineCapability.HEADER_CUSTOM,
         ]
 
+    @property
+    def platforms(self) -> list:
+        return []  # 全平台
+
+    @property
+    def install_hint(self) -> str:
+        os_name = current_os()
+        if os_name == "linux":
+            return "apt install wget / yum install wget"
+        elif os_name == "darwin":
+            return "brew install wget"
+        elif os_name == "windows":
+            return "scoop install wget / choco install wget"
+        return "https://www.gnu.org/software/wget/"
+
     def is_available(self) -> bool:
+        if not self.is_platform_compatible():
+            return False
         return check_command("wget")
 
     def validate_request(self, request: DownloadRequest) -> Optional[str]:

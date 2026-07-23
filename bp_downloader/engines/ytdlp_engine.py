@@ -7,7 +7,7 @@ yt-dlp 引擎 — 视频平台下载利器。
 import os
 import json
 from typing import List, Optional
-from ..base import DownloadEngine, DownloadRequest, DownloadResult, EngineCapability
+from ..base import DownloadEngine, DownloadRequest, DownloadResult, EngineCapability, current_os
 from ..registry import EngineRegistry
 from ..utils import run_command, check_command
 
@@ -35,7 +35,17 @@ class YtDlpEngine(DownloadEngine):
             EngineCapability.PARALLEL,
         ]
 
+    @property
+    def platforms(self) -> list:
+        return []  # 全平台 (Python)
+
+    @property
+    def install_hint(self) -> str:
+        return "pip install yt-dlp"
+
     def is_available(self) -> bool:
+        if not self.is_platform_compatible():
+            return False
         return check_command("yt-dlp")
 
     def validate_request(self, request: DownloadRequest) -> Optional[str]:

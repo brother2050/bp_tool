@@ -7,7 +7,7 @@ aria2c 引擎 — 高性能多连接下载器。
 import os
 import json
 from typing import List, Optional
-from ..base import DownloadEngine, DownloadRequest, DownloadResult, EngineCapability
+from ..base import DownloadEngine, DownloadRequest, DownloadResult, EngineCapability, current_os
 from ..registry import EngineRegistry
 from ..utils import run_command, check_command, infer_filename, parse_speed_limit
 
@@ -39,7 +39,24 @@ class Aria2cEngine(DownloadEngine):
             EngineCapability.PARALLEL,
         ]
 
+    @property
+    def platforms(self) -> list:
+        return []  # 全平台: Linux, macOS, Windows
+
+    @property
+    def install_hint(self) -> str:
+        os_name = current_os()
+        if os_name == "linux":
+            return "apt install aria2 / yum install aria2 / pacman -S aria2"
+        elif os_name == "darwin":
+            return "brew install aria2"
+        elif os_name == "windows":
+            return "scoop install aria2 / choco install aria2"
+        return "https://aria2.github.io/"
+
     def is_available(self) -> bool:
+        if not self.is_platform_compatible():
+            return False
         return check_command("aria2c")
 
     def validate_request(self, request: DownloadRequest) -> Optional[str]:

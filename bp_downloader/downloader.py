@@ -36,18 +36,36 @@ class UnifiedDownloader:
         self._registry = EngineRegistry
 
     def list_engines(self) -> Dict[str, Dict[str, Any]]:
-        """列出所有引擎及其状态"""
+        """列出所有引擎及其状态（含操作系统兼容性）"""
         result = {}
         for name, engine_cls in self._registry.get_all_engines().items():
             engine = self._registry.get_engine(name)
             ec = self.config.get_engine_config(name)
-            result[name] = {
-                "display_name": engine.display_name if engine else name,
-                "available": engine.is_available() if engine else False,
-                "enabled": ec.enabled,
-                "priority": ec.priority,
-                "capabilities": [c.name for c in engine.capabilities] if engine else [],
-            }
+            if engine:
+                avail_info = engine.availability_info()
+                result[name] = {
+                    "display_name": engine.display_name,
+                    "available": avail_info["available"],
+                    "platform_compatible": avail_info["platform_compatible"],
+                    "installed": avail_info["installed"],
+                    "enabled": ec.enabled,
+                    "priority": ec.priority,
+                    "capabilities": [c.name for c in engine.capabilities],
+                    "supported_platforms": avail_info["supported_platforms"],
+                    "install_hint": avail_info["install_hint"],
+                }
+            else:
+                result[name] = {
+                    "display_name": name,
+                    "available": False,
+                    "platform_compatible": True,
+                    "installed": False,
+                    "enabled": ec.enabled,
+                    "priority": ec.priority,
+                    "capabilities": [],
+                    "supported_platforms": ["all"],
+                    "install_hint": "",
+                }
         return result
 
     def select_engine(

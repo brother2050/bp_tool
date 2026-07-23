@@ -8,7 +8,13 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Optional, Dict, List, Any
+import platform
 import time
+
+
+def current_os() -> str:
+    """返回当前操作系统: 'linux', 'darwin', 'windows'"""
+    return platform.system().lower()
 
 
 class EngineCapability(Enum):
@@ -116,10 +122,43 @@ class DownloadEngine(ABC):
         """引擎支持的能力列表"""
         ...
 
+    @property
+    def platforms(self) -> List[str]:
+        """引擎支持的操作系统列表。返回空列表表示全平台支持。
+        值: 'linux', 'darwin', 'windows'"""
+        return []  # 空 = 全平台
+
+    @property
+    def install_hint(self) -> str:
+        """引擎未安装时的安装提示"""
+        return ""
+
+    def is_platform_compatible(self) -> bool:
+        """检查当前操作系统是否兼容此引擎"""
+        supported = self.platforms
+        if not supported:
+            return True  # 空列表 = 全平台
+        return current_os() in supported
+
     @abstractmethod
     def is_available(self) -> bool:
         """检测引擎是否可用(已安装/可访问)"""
         ...
+
+    def availability_info(self) -> dict:
+        """返回引擎可用性详情，用于诊断和展示"""
+        plat_ok = self.is_platform_compatible()
+        installed = self.is_available() if plat_ok else False
+        return {
+            "name": self.name,
+            "display_name": self.display_name,
+            "platform_compatible": plat_ok,
+            "installed": installed,
+            "available": plat_ok and installed,
+            "current_os": current_os(),
+            "supported_platforms": self.platforms or ["all"],
+            "install_hint": self.install_hint,
+        }
 
     @abstractmethod
     def download(self, request: DownloadRequest) -> DownloadResult:

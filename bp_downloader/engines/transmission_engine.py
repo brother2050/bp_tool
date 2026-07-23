@@ -7,7 +7,7 @@ transmission-cli 引擎 — BitTorrent 下载工具。
 import os
 import time
 from typing import List, Optional
-from ..base import DownloadEngine, DownloadRequest, DownloadResult, EngineCapability
+from ..base import DownloadEngine, DownloadRequest, DownloadResult, EngineCapability, current_os
 from ..registry import EngineRegistry
 from ..utils import run_command, check_command
 
@@ -33,7 +33,22 @@ class TransmissionEngine(DownloadEngine):
             EngineCapability.SPEED_LIMIT,
         ]
 
+    @property
+    def platforms(self) -> list:
+        return ["linux", "darwin"]  # Windows 需要额外配置
+
+    @property
+    def install_hint(self) -> str:
+        os_name = current_os()
+        if os_name == "linux":
+            return "apt install transmission-cli / yum install transmission-cli"
+        elif os_name == "darwin":
+            return "brew install transmission"
+        return "https://transmissionbt.com/ (Windows 需安装完整 Transmission)"
+
     def is_available(self) -> bool:
+        if not self.is_platform_compatible():
+            return False
         return check_command("transmission-cli") or check_command("transmission-remote")
 
     def validate_request(self, request: DownloadRequest) -> Optional[str]:
