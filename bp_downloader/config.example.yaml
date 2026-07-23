@@ -1,0 +1,85 @@
+# bp_downloader 配置示例
+# 复制为 config.yaml 并修改
+
+# 默认下载设置
+default_engine: null          # 默认引擎 (null = 自动选择)
+fallback_engines:             # 失败时的回退引擎链
+  - aria2c
+  - curl
+  - wget
+  - urllib
+output_dir: ./downloads       # 默认输出目录
+max_concurrent: 3             # 最大并发下载数
+timeout: 60                   # 全局超时(秒)
+max_retries: 3                # 全局最大重试次数
+retry_delay: 1.0              # 重试延迟(秒)
+speed_limit: null             # 全局限速 (如 "1M", "500K")
+proxy: null                   # 全局代理 (如 "http://127.0.0.1:7890")
+user_agent: null              # 全局 User-Agent
+
+# 引擎配置
+engines:
+  aria2c:
+    enabled: true
+    priority: 10              # 最高优先级
+    max_connections: 16
+    timeout: 120
+    extra_args: []            # 额外命令行参数
+  wget:
+    enabled: true
+    priority: 30
+  curl:
+    enabled: true
+    priority: 40
+  yt_dlp:
+    enabled: true
+    priority: 5
+    custom:
+      format: "best"          # 视频格式选择
+      merge_output_format: null
+  rclone:
+    enabled: true
+    priority: 20
+  megatools:
+    enabled: true
+    priority: 15
+  urllib:
+    enabled: true
+    priority: 90              # 最低优先级 (备用)
+  requests:
+    enabled: true
+    priority: 80
+  httpx:
+    enabled: true
+    priority: 70
+  transmission:
+    enabled: true
+    priority: 25
+
+# 路由规则 (按顺序匹配，第一个匹配的生效)
+route_rules:
+  # 视频平台 → yt-dlp
+  - pattern: "*.youtube.com"
+    engine: yt_dlp
+  - pattern: "*.youtu.be"
+    engine: yt_dlp
+  - pattern: "*.bilibili.com"
+    engine: yt_dlp
+  - pattern: "*.b23.tv"
+    engine: yt_dlp
+  - pattern: "*.twitter.com"
+    engine: yt_dlp
+  - pattern: "*.x.com"
+    engine: yt_dlp
+  - pattern: "*.tiktok.com"
+    engine: yt_dlp
+  - pattern: "*.instagram.com"
+    engine: yt_dlp
+  # Magnet/Torrent → aria2c
+  - pattern: "magnet:*"
+    engine: aria2c
+  - pattern: "*.torrent"
+    engine: aria2c
+  # Mega.nz → megatools
+  - pattern: "*.mega.nz"
+    engine: megatools
