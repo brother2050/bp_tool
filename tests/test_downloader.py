@@ -146,13 +146,11 @@ class TestUnifiedDownloader:
         assert results == []
 
     def test_auto_download_video_url(self):
-        """auto_download 应该对视频 URL 使用 yt-dlp"""
+        """auto_download 应该对视频 URL 使用 yt-dlp（如果可用）"""
         dl = UnifiedDownloader(self.config)
-        # 这里只测试路由逻辑，不实际下载
-        # 因为 yt-dlp 可能不可用
         result = dl.auto_download(url="https://www.youtube.com/watch?v=abc")
-        # 如果 yt-dlp 不可用，会失败
-        assert result.engine_name in ("yt_dlp", "none", "urllib", "wget", "curl", "requests", "httpx")
+        # yt-dlp 不可用时会回退到其他引擎
+        assert result.engine_name in ("yt_dlp", "aria2c", "none", "urllib", "wget", "curl", "requests", "httpx")
 
     def test_auto_download_magnet(self, tmp_dir):
         """auto_download 应该对 magnet 链接使用 aria2c/transmission"""

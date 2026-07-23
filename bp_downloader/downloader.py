@@ -248,7 +248,11 @@ class UnifiedDownloader:
         parsed = urlparse(url)
         host = (parsed.hostname or "").lstrip("www.")
         if any(host.endswith(d) for d in video_domains):
-            return self.download(url, output_dir=output_dir, engine="yt_dlp", **kwargs)
+            engine = self._registry.get_engine("yt_dlp")
+            if engine and engine.is_available():
+                return self.download(url, output_dir=output_dir, engine="yt_dlp", fallback=False, **kwargs)
+            # yt-dlp 不可用，走默认下载
+            return self.download(url, output_dir=output_dir, **kwargs)
 
         # Magnet / Torrent
         if url.startswith("magnet:") or url.endswith(".torrent"):
