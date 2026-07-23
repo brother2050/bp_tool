@@ -398,7 +398,10 @@ class BaiduPanDownloader:
         r = urllib.request.Request(url)
         r.add_header("User-Agent",PCS_UA)
         r.add_header("Cookie",f"BDUSS={self._bduss}")
-        return json.loads(self.cli.op.open(r,timeout=30).read()).get("list",[])
+        try:
+            return json.loads(self.cli.op.open(r,timeout=30).read()).get("list",[])
+        except Exception:
+            return []
 
     def _dl_url(self, path):
         """获取直链（优先 PCS API，返回所有URL）"""
@@ -419,11 +422,23 @@ class BaiduPanDownloader:
         try: self.cli.op.open(r,timeout=30)
         except: pass
 
+    def _search_file(self, keyword):
+        """在网盘中搜索文件"""
+        url = f"{PCS_BASE}/rest/2.0/pcs/file?method=search&path=%2F&wd={urllib.parse.quote(keyword)}&re=1&app_id={PCS_APP_ID}"
+        r = urllib.request.Request(url)
+        r.add_header("User-Agent",PCS_UA)
+        r.add_header("Cookie",f"BDUSS={self._bduss}")
+        try:
+            return json.loads(self.cli.op.open(r,timeout=30).read()).get("list",[])
+        except Exception:
+            return []
+
     def download(self, share_url, password='', save_dir="./baidu_downloads",
                  remote_temp="/_baidu_dl_tmp"):
         surl = self._surl(share_url)
         print(f"[1/5] 验证... surl={surl}")
 
+        # 1. 验证密码
         if password:
             vr = self._verify(surl, password)
             if vr.get("errno")!=0:
@@ -434,6 +449,7 @@ class BaiduPanDownloader:
             rk = vr.get("randsk","")
             if rk: self.cli.set_cookie("BDCLND", urllib.parse.unquote(rk))
 
+        # 2. 获取页面数据
         print("[2/5] 获取分享信息...")
         pd = self._page_data(f"{PAN_BASE}/s/1{surl}")
         uk = pd.get("share_uk") or pd.get("uk"); sid = pd.get("shareid")
@@ -441,15 +457,24 @@ class BaiduPanDownloader:
         if not uk or not sid: raise Exception("分享信息获取失败")
         print(f"  分享者: {pd.get('linkusername','未知')}")
 
+        # 3. 扫描文件（修复path截断问题）
         print("[3/5] 扫描文件...")
         pfl = pd.get("file_list",[])
+        for f in pfl:
+            fn = f.get("server_filename","")
+            path = f.get("path","")
+            # 修复：path被截断时使用server_filename
+            if not path.startswith("/"):
+                f["path"] = "/" + fn
         files = [f for f in pfl if f.get("isdir")==0]
         dirs  = [f for f in pfl if f.get("isdir")==1]
         for f in files: print(f"  📄 {f.get('server_filename')} ({_fmt(f.get('size',0))})")
         for d in dirs:  print(f"  📁 {d.get('server_filename')}/")
         allf = list(files)
         for d in dirs:
-            sub = self._share_list(surl, uk, sid, bt, d["path"])
+            dpath = d.get("path","")
+            if not dpath.startswith("/"): dpath = "/" + d.get("server_filename","")
+            sub = self._share_list(surl, uk, sid, bt, dpath)
             for sf in sub:
                 if sf.get("isdir")==0: allf.append(sf)
                 else:
@@ -457,30 +482,48 @@ class BaiduPanDownloader:
                     allf.extend([x for x in deeper if x.get("isdir")==0])
         print(f"  共 {len(allf)} 个文件")
 
+        # 4. 转存
         print("[4/5] 转存...")
         self._mkdir(remote_temp)
         ok,msg = self._transfer(uk, sid, bt, [f["fs_id"] for f in allf], remote_temp)
         print(f"  {msg}")
         if not ok: raise Exception(f"转存失败: {msg}")
 
+        # 5. 下载（修复：搜索实际文件位置）
         print(f"[5/5] 下载到 {save_dir}")
         os.makedirs(save_dir, exist_ok=True)
+
+        # 尝试从转存目录获取文件
         own = self._list_own(remote_temp)
+        # 如果转存目录为空（可能被转到了其他位置），搜索文件
         if not own:
-            for d in dirs:
-                alt = self._list_own(f"/{d.get('server_filename','')}")
-                if alt: own=alt; break
-        if not own: print("  ⚠ 未找到文件"); return
+            for f in allf:
+                fn = f.get("server_filename","")
+                results = self._search_file(fn)
+                if results:
+                    own = results
+                    print(f"  通过搜索找到 {len(own)} 个文件")
+                    break
+        if not own:
+            # 最后尝试列出根目录
+            own = self._list_own("/")
+            if not own:
+                print("  ⚠ 未找到文件"); return
 
         print(f"  获取 {len(own)} 个直链...")
         tasks = []
         for f in own:
             fn = f.get("server_filename",""); rp = f.get("path",""); sz = f.get("size",0)
+            if not rp: continue
             try:
                 dl_urls = self._dl_url(rp)
                 tasks.append((dl_urls, os.path.join(save_dir,fn), sz, fn))
+                print(f"    ✓ {fn} -> 直链OK")
             except Exception as e:
-                print(f"  ⚠ {fn}: {e}")
+                print(f"    ⚠ {fn}: {e}")
+
+        if not tasks:
+            print("  ⚠ 无有效下载任务"); return
 
         total = len(tasks); ok_cnt = [0]; t0 = time.time()
 
@@ -492,7 +535,6 @@ class BaiduPanDownloader:
                                       params=self._aria2_params):
                         ok_cnt[0] += 1; return
                     print("    回退到内置引擎...")
-                # 内置持久连接引擎
                 best_url = dl_urls[0]
                 for u in dl_urls:
                     if u.startswith("http://"):
