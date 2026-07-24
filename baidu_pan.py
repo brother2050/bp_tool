@@ -45,11 +45,13 @@ MAX_PAR      = 4                   # 并行文件数
 # aria2c 默认参数（可通过 BaiduPanDownloader.aria2_params 覆盖）
 ARIA2_DEFAULTS = {
     "max-connection-per-server": 16,  # 每服务器最大连接（aria2c上限16）
-    "split": 64,                       # 分块数（越大越快，无上限）
-    "min-split-size": "1M",            # 最小块大小
-    "timeout": 60,
-    "retry-wait": 3,
-    "max-tries": 5,
+    "split": 256,                      # 分块数（256块，最大化并行）
+    "min-split-size": "512K",          # 最小512KB/块（更小=更多块）
+    "timeout": 120,
+    "retry-wait": 2,
+    "max-tries": 10,
+    "lowest-speed-limit": "50K",      # 低于50KB/s则重连
+    "max-overall-download-limit": "0", # 不限速
 }
 
 # ============================================================
