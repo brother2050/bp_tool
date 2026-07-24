@@ -31,6 +31,15 @@ from urllib.parse import urlparse
 # ============================================================
 PAN_BASE   = "https://pan.baidu.com"
 PCS_BASE   = "https://pcs.baidu.com"
+# BaiduPCS-Go 风格 PCS 服务器列表（按速度排序）
+PCS_SERVERS = [
+    "c2.pcs.baidu.com",   # 最快
+    "d.pcs.baidu.com",
+    "pcs.baidu.com",
+    "c.pcs.baidu.com",
+]
+# BaiduPCS-Go 官方 UA（模拟安卓客户端）
+GO_UA = "netdisk;P2SP;3.0.0.8;netdisk;11.12.3;GM1910;android-android;11.0;JSbridge4.4.0;jointBridge;1.1.0;"
 PAN_APP_ID = "250528"
 PCS_APP_ID = "778750"
 
@@ -40,7 +49,7 @@ PCS_UA = "softxm;netdisk"
 
 UPLOAD_CHUNK = 4 * 1024 * 1024
 DL_BUF       = 1024 * 1024        # 1MB 读写缓冲（核心优化）
-MAX_PAR      = 4                   # 并行文件数
+MAX_PAR      = 1                   # 并行文件数（BaiduPCS-Go: 普通用户=1避免限速）
 BURST_CHUNK  = 280 * 1024 * 1024   # 280MB 突发分块（百度前~296MB满速）
 
 # aria2c 默认参数（可通过 BaiduPanDownloader.aria2_params 覆盖）
@@ -208,7 +217,7 @@ class PersistDownloader:
         return p.hostname, p.port or (443 if p.scheme=="https" else 80), path, p.scheme=="https"
 
     def _do_request(self, url, headers, start_byte=None, end_byte=None):
-        """发起HTTP请求，处理重定向，返回(conn, resp)"""
+        """发起HTTP请求，处理重定向，返回(conn, resp, actual_url)"""
         p = urlparse(url)
         host = p.hostname
         port = p.port or (443 if p.scheme == "https" else 80)
@@ -244,97 +253,45 @@ class PersistDownloader:
                     conn = http.client.HTTPSConnection(h2, pt2, context=self._ssl_ctx, timeout=120)
                 else:
                     conn = http.client.HTTPConnection(h2, pt2, timeout=120)
-                hdrs2 = dict(hdrs)
-                conn.request("GET", pa2, headers=hdrs2)
+                conn.request("GET", pa2, headers=hdrs)
                 resp = conn.getresponse()
-
-        return conn, resp
+                return conn, resp, loc
+        return conn, resp, url
 
     def download(self, url, filepath, label="", size_hint=0):
-        """分块下载：每250MB重新连接，利用百度速度突发机制"""
+        """单连接下载（BaiduPCS-Go普通用户模式：max_parallel=1）"""
         os.makedirs(os.path.dirname(filepath) or ".", exist_ok=True)
 
         headers = {
-            "User-Agent": PCS_UA,
+            "User-Agent": GO_UA,  # 使用BaiduPCS-Go UA
             "Cookie": f"BDUSS={self._bduss}",
             "Connection": "keep-alive",
         }
 
-        # 先获取文件大小
-        conn0, resp0 = self._do_request(url, headers, start_byte=0, end_byte=0)
-        total = int(resp0.getheader("Content-Range", "0-0/0").split("/")[1]) if resp0.status == 206 else size_hint
-        resp0.read()
-        conn0.close()
+        conn, resp, real_url = self._do_request(url, headers)
 
-        if total <= BURST_CHUNK or total <= 0:
-            # 小文件直接下载
-            return self._download_chunk(url, filepath, headers, 0, total, label, 0, total)
-
-        # 大文件：分250MB块下载，每块享受突发速度
+        total = int(resp.getheader("Content-Length", 0)) or size_hint
         downloaded = 0
         t0 = time.time()
+
         with open(filepath, "wb") as f:
-            pass  # 预创建文件
-
-        chunk_idx = 0
-        while downloaded < total:
-            chunk_start = downloaded
-            chunk_end = min(downloaded + BURST_CHUNK - 1, total - 1)
-            chunk_size = chunk_end - chunk_start + 1
-
-            actual = self._download_chunk(
-                url, filepath, headers, chunk_start, chunk_end,
-                label, downloaded, total, append=(downloaded > 0))
-
-            if actual == 0:
-                break
-            downloaded += actual
-            chunk_idx += 1
-
-        elapsed = time.time() - t0
-        speed = downloaded / elapsed if elapsed > 0 else 0
-        print(f"\r    ✓ {label} — {_fmt(downloaded)} ({_spd(speed)})        ")
-        return downloaded
-
-    def _download_chunk(self, url, filepath, headers, start, end, label, offset, total, append=False):
-        """下载单个分块"""
-        conn, resp = self._do_request(url, headers, start_byte=start, end_byte=end)
-
-        chunk_size = end - start + 1 if end > 0 else 0
-        downloaded = 0
-        t0 = time.time()
-        last_slow_time = None
-
-        mode = "ab" if append else "wb"
-        with open(filepath, mode) as f:
-            if append:
-                f.seek(start)
             while True:
                 chunk = resp.read(DL_BUF)
                 if not chunk:
                     break
                 f.write(chunk)
                 downloaded += len(chunk)
-
-                # 进度显示
                 if total > 0:
-                    pct = (offset + downloaded) * 100 // total
+                    pct = downloaded * 100 // total
                     elapsed = time.time() - t0
                     speed = downloaded / elapsed if elapsed > 0 else 0
                     print(f"\r    {label} [{pct}%] {_spd(speed)}   ",
                           end="", flush=True)
 
-                    # 检测速度下降（低于50KB/s超过5秒），提前切换下一块
-                    if speed < 50*1024 and downloaded > 1024*1024:
-                        if last_slow_time and time.time() - last_slow_time > 5:
-                            print(f"\r    {label} 速度下降，切换下一块...   ", end="", flush=True)
-                            break
-                        if not last_slow_time:
-                            last_slow_time = time.time()
-                    else:
-                        last_slow_time = None
-
         conn.close()
+        elapsed = time.time() - t0
+        speed = downloaded / elapsed if elapsed > 0 else 0
+        print(f"\r    ✓ {label} — {_fmt(downloaded)} ({_spd(speed)})        ")
         return downloaded
 
 # ============================================================
@@ -522,36 +479,22 @@ class BaiduPanDownloader:
             return []
 
     def _dl_url(self, path):
-        """获取直链（BaiduPCS-Go签名方式，返回更多CDN节点）"""
-        # 构造签名（参考 BaiduPCS-Go）
-        enc = hashlib.sha1(self._bduss.encode()).hexdigest()
-        ts = str(int(time.time()))
-        devuid = enc.upper() + '|0'
-        sign_str = enc + '' + 'ebrcUYiuxaZv2XGu7KIYKxUrqfnOfpDF' + ts + devuid
-        rand = hashlib.sha1(sign_str.encode()).hexdigest()
-
-        url = (f"{PCS_BASE}/rest/2.0/pcs/file?method=locatedownload"
-               f"&path={urllib.parse.quote(path)}"
-               f"&app_id={PAN_APP_ID}&clienttype=17"
-               f"&es=1&esl=1&channel=0&version=11.12.3"
-               f"&devuid={urllib.parse.quote(devuid)}"
-               f"&rand={rand}&time={ts}")
-        r = urllib.request.Request(url)
-        r.add_header("User-Agent", PCS_UA)
-        r.add_header("Cookie", f"BDUSS={self._bduss}")
-        d = json.loads(self.cli.op.open(r,timeout=30).read())
-        urls = [u['url'] for u in d.get("urls",[])]
-        if not urls:
-            # 回退到简单方式（使用PAN_APP_ID获取不限速URL）
-            url2 = (f"{PCS_BASE}/rest/2.0/pcs/file?method=locatedownload"
-                    f"&path={urllib.parse.quote(path)}&app_id={PAN_APP_ID}")
-            r2 = urllib.request.Request(url2)
-            r2.add_header("User-Agent", PCS_UA)
-            r2.add_header("Cookie", f"BDUSS={self._bduss}")
-            d2 = json.loads(self.cli.op.open(r2,timeout=30).read())
-            urls = [u['url'] for u in d2.get("urls",[])]
-        if not urls: raise Exception("无下载链接")
-        return urls
+        """获取直链（locatedownload必须用pcs.baidu.com）"""
+        # locatedownload 只有 pcs.baidu.com 有效
+        for app_id in [PAN_APP_ID, PCS_APP_ID]:
+            try:
+                url = (f"{PCS_BASE}/rest/2.0/pcs/file?method=locatedownload"
+                       f"&path={urllib.parse.quote(path)}&app_id={app_id}")
+                r = urllib.request.Request(url)
+                r.add_header("User-Agent", GO_UA)
+                r.add_header("Cookie", f"BDUSS={self._bduss}")
+                d = json.loads(self.cli.op.open(r,timeout=10).read())
+                urls = [u['url'] for u in d.get("urls",[])]
+                if urls:
+                    return urls
+            except Exception:
+                continue
+        raise Exception("无下载链接")
 
     def _mkdir(self, p):
         url = f"{PCS_BASE}/rest/2.0/pcs/file?method=mkdir&path={urllib.parse.quote(p)}&app_id={PCS_APP_ID}"
