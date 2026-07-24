@@ -41,6 +41,7 @@ PCS_UA = "softxm;netdisk"
 UPLOAD_CHUNK = 4 * 1024 * 1024
 DL_BUF       = 1024 * 1024        # 1MB 读写缓冲（核心优化）
 MAX_PAR      = 4                   # 并行文件数
+BURST_CHUNK  = 250 * 1024 * 1024   # 250MB 突发分块（百度前~270MB满速）
 
 # aria2c 默认参数（可通过 BaiduPanDownloader.aria2_params 覆盖）
 ARIA2_DEFAULTS = {
@@ -206,30 +207,27 @@ class PersistDownloader:
         if p.query: path += "?" + p.query
         return p.hostname, p.port or (443 if p.scheme=="https" else 80), path, p.scheme=="https"
 
-    def download(self, url, filepath, label="", size_hint=0):
-        """http.client 直接下载（比urllib快3-7倍）"""
-        os.makedirs(os.path.dirname(filepath) or ".", exist_ok=True)
-
-        # 解析URL
+    def _do_request(self, url, headers, start_byte=None, end_byte=None):
+        """发起HTTP请求，处理重定向，返回(conn, resp)"""
         p = urlparse(url)
         host = p.hostname
         port = p.port or (443 if p.scheme == "https" else 80)
         req_path = p.path + ("?"+p.query if p.query else "")
         is_https = p.scheme == "https"
 
-        # 创建连接
         if is_https:
             conn = http.client.HTTPSConnection(host, port, context=self._ssl_ctx, timeout=120)
         else:
             conn = http.client.HTTPConnection(host, port, timeout=120)
 
-        headers = {
-            "User-Agent": PCS_UA,
-            "Cookie": f"BDUSS={self._bduss}",
-            "Connection": "keep-alive",
-        }
+        hdrs = dict(headers)
+        if start_byte is not None:
+            if end_byte is not None:
+                hdrs["Range"] = f"bytes={start_byte}-{end_byte}"
+            else:
+                hdrs["Range"] = f"bytes={start_byte}-"
 
-        conn.request("GET", req_path, headers=headers)
+        conn.request("GET", req_path, headers=hdrs)
         resp = conn.getresponse()
 
         # 处理302重定向
@@ -246,31 +244,97 @@ class PersistDownloader:
                     conn = http.client.HTTPSConnection(h2, pt2, context=self._ssl_ctx, timeout=120)
                 else:
                     conn = http.client.HTTPConnection(h2, pt2, timeout=120)
-                conn.request("GET", pa2, headers=headers)
+                hdrs2 = dict(hdrs)
+                conn.request("GET", pa2, headers=hdrs2)
                 resp = conn.getresponse()
 
-        total = int(resp.getheader("Content-Length", 0)) or size_hint
+        return conn, resp
+
+    def download(self, url, filepath, label="", size_hint=0):
+        """分块下载：每250MB重新连接，利用百度速度突发机制"""
+        os.makedirs(os.path.dirname(filepath) or ".", exist_ok=True)
+
+        headers = {
+            "User-Agent": PCS_UA,
+            "Cookie": f"BDUSS={self._bduss}",
+            "Connection": "keep-alive",
+        }
+
+        # 先获取文件大小
+        conn0, resp0 = self._do_request(url, headers, start_byte=0, end_byte=0)
+        total = int(resp0.getheader("Content-Range", "0-0/0").split("/")[1]) if resp0.status == 206 else size_hint
+        resp0.read()
+        conn0.close()
+
+        if total <= BURST_CHUNK or total <= 0:
+            # 小文件直接下载
+            return self._download_chunk(url, filepath, headers, 0, total, label, 0, total)
+
+        # 大文件：分250MB块下载，每块享受突发速度
         downloaded = 0
         t0 = time.time()
-
         with open(filepath, "wb") as f:
+            pass  # 预创建文件
+
+        chunk_idx = 0
+        while downloaded < total:
+            chunk_start = downloaded
+            chunk_end = min(downloaded + BURST_CHUNK - 1, total - 1)
+            chunk_size = chunk_end - chunk_start + 1
+
+            actual = self._download_chunk(
+                url, filepath, headers, chunk_start, chunk_end,
+                label, downloaded, total, append=(downloaded > 0))
+
+            if actual == 0:
+                break
+            downloaded += actual
+            chunk_idx += 1
+
+        elapsed = time.time() - t0
+        speed = downloaded / elapsed if elapsed > 0 else 0
+        print(f"\r    ✓ {label} — {_fmt(downloaded)} ({_spd(speed)})        ")
+        return downloaded
+
+    def _download_chunk(self, url, filepath, headers, start, end, label, offset, total, append=False):
+        """下载单个分块"""
+        conn, resp = self._do_request(url, headers, start_byte=start, end_byte=end)
+
+        chunk_size = end - start + 1 if end > 0 else 0
+        downloaded = 0
+        t0 = time.time()
+        last_slow_time = None
+
+        mode = "ab" if append else "wb"
+        with open(filepath, mode) as f:
+            if append:
+                f.seek(start)
             while True:
                 chunk = resp.read(DL_BUF)
                 if not chunk:
                     break
                 f.write(chunk)
                 downloaded += len(chunk)
+
+                # 进度显示
                 if total > 0:
-                    pct = downloaded * 100 // total
+                    pct = (offset + downloaded) * 100 // total
                     elapsed = time.time() - t0
                     speed = downloaded / elapsed if elapsed > 0 else 0
                     print(f"\r    {label} [{pct}%] {_spd(speed)}   ",
                           end="", flush=True)
 
+                    # 检测速度下降（低于50KB/s超过5秒），提前切换下一块
+                    if speed < 50*1024 and downloaded > 1024*1024:
+                        if last_slow_time and time.time() - last_slow_time > 5:
+                            print(f"\r    {label} 速度下降，切换下一块...   ", end="", flush=True)
+                            break
+                        if not last_slow_time:
+                            last_slow_time = time.time()
+                    else:
+                        last_slow_time = None
+
         conn.close()
-        elapsed = time.time() - t0
-        speed = downloaded / elapsed if elapsed > 0 else 0
-        print(f"\r    ✓ {label} — {_fmt(downloaded)} ({_spd(speed)})        ")
         return downloaded
 
 # ============================================================
