@@ -263,7 +263,7 @@ class PersistDownloader:
         os.makedirs(os.path.dirname(filepath) or ".", exist_ok=True)
 
         headers = {
-            "User-Agent": GO_UA,  # 使用BaiduPCS-Go UA
+            "User-Agent": PCS_UA,
             "Cookie": f"BDUSS={self._bduss}",
             "Connection": "keep-alive",
         }
@@ -480,13 +480,13 @@ class BaiduPanDownloader:
 
     def _dl_url(self, path):
         """获取直链（locatedownload必须用pcs.baidu.com）"""
-        # locatedownload 只有 pcs.baidu.com 有效
-        for app_id in [PAN_APP_ID, PCS_APP_ID]:
+        # 先用PCS app_id（返回qdall01节点，兼容性最好）
+        for app_id in [PCS_APP_ID, PAN_APP_ID]:
             try:
                 url = (f"{PCS_BASE}/rest/2.0/pcs/file?method=locatedownload"
                        f"&path={urllib.parse.quote(path)}&app_id={app_id}")
                 r = urllib.request.Request(url)
-                r.add_header("User-Agent", GO_UA)
+                r.add_header("User-Agent", PCS_UA)
                 r.add_header("Cookie", f"BDUSS={self._bduss}")
                 d = json.loads(self.cli.op.open(r,timeout=10).read())
                 urls = [u['url'] for u in d.get("urls",[])]
