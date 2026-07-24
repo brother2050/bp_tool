@@ -46,12 +46,10 @@ MAX_PAR      = 4                   # 并行文件数
 ARIA2_DEFAULTS = {
     "max-connection-per-server": 16,  # 每服务器最大连接（aria2c上限16）
     "split": 256,                      # 分块数（256块，最大化并行）
-    "min-split-size": "512K",          # 最小512KB/块（更小=更多块）
+    "min-split-size": "1M",            # 最小1MB/块
     "timeout": 120,
     "retry-wait": 2,
     "max-tries": 10,
-    # "lowest-speed-limit": "1048576",  # 低于1MB/s重连（注释：网速慢时会频繁断连）
-    "max-overall-download-limit": "0", # 不限速
 }
 
 # ============================================================
