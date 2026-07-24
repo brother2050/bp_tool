@@ -50,7 +50,7 @@ ARIA2_DEFAULTS = {
     "timeout": 120,
     "retry-wait": 2,
     "max-tries": 10,
-    "lowest-speed-limit": "1M",       # 低于1MB/s则重连
+    # "lowest-speed-limit": "1048576",  # 低于1MB/s重连（注释：网速慢时会频繁断连）
     "max-overall-download-limit": "0", # 不限速
 }
 
