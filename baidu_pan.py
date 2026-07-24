@@ -41,7 +41,7 @@ PCS_UA = "softxm;netdisk"
 UPLOAD_CHUNK = 4 * 1024 * 1024
 DL_BUF       = 1024 * 1024        # 1MB 读写缓冲（核心优化）
 MAX_PAR      = 4                   # 并行文件数
-BURST_CHUNK  = 250 * 1024 * 1024   # 250MB 突发分块（百度前~270MB满速）
+BURST_CHUNK  = 280 * 1024 * 1024   # 280MB 突发分块（百度前~296MB满速）
 
 # aria2c 默认参数（可通过 BaiduPanDownloader.aria2_params 覆盖）
 ARIA2_DEFAULTS = {
