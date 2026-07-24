@@ -461,14 +461,35 @@ class BaiduPanDownloader:
             return []
 
     def _dl_url(self, path):
-        """获取直链（优先 PCS API，返回所有URL）"""
-        url = f"{PCS_BASE}/rest/2.0/pcs/file?method=locatedownload&path={urllib.parse.quote(path)}&app_id={PCS_APP_ID}"
+        """获取直链（BaiduPCS-Go签名方式，返回更多CDN节点）"""
+        # 构造签名（参考 BaiduPCS-Go）
+        enc = hashlib.sha1(self._bduss.encode()).hexdigest()
+        ts = str(int(time.time()))
+        devuid = enc.upper() + '|0'
+        sign_str = enc + '' + 'ebrcUYiuxaZv2XGu7KIYKxUrqfnOfpDF' + ts + devuid
+        rand = hashlib.sha1(sign_str.encode()).hexdigest()
+
+        url = (f"{PCS_BASE}/rest/2.0/pcs/file?method=locatedownload"
+               f"&path={urllib.parse.quote(path)}"
+               f"&app_id={PAN_APP_ID}&clienttype=17"
+               f"&es=1&esl=1&channel=0&version=11.12.3"
+               f"&devuid={urllib.parse.quote(devuid)}"
+               f"&rand={rand}&time={ts}")
         r = urllib.request.Request(url)
-        r.add_header("User-Agent",PCS_UA)
-        r.add_header("Cookie",f"BDUSS={self._bduss}")
+        r.add_header("User-Agent", PCS_UA)
+        r.add_header("Cookie", f"BDUSS={self._bduss}")
         d = json.loads(self.cli.op.open(r,timeout=30).read())
         urls = [u['url'] for u in d.get("urls",[])]
-        if not urls: raise Exception(f"无下载链接")
+        if not urls:
+            # 回退到简单方式
+            url2 = (f"{PCS_BASE}/rest/2.0/pcs/file?method=locatedownload"
+                    f"&path={urllib.parse.quote(path)}&app_id={PCS_APP_ID}")
+            r2 = urllib.request.Request(url2)
+            r2.add_header("User-Agent", PCS_UA)
+            r2.add_header("Cookie", f"BDUSS={self._bduss}")
+            d2 = json.loads(self.cli.op.open(r2,timeout=30).read())
+            urls = [u['url'] for u in d2.get("urls",[])]
+        if not urls: raise Exception("无下载链接")
         return urls
 
     def _mkdir(self, p):
