@@ -1,150 +1,129 @@
-# 百度网盘下载/上传工具
+# BaiduPCS-Py - 百度网盘 Python 客户端
 
-纯 Python 标准库实现，支持 aria2c 加速，无第三方依赖。
+基于 [BaiduPCS-Go](https://github.com/qjfoidnh/BaiduPCS-Go) 的 API 逻辑，纯 Python 实现。
 
 ## 功能
 
-| 功能 | 说明 |
-|------|------|
-| 分享链接下载 | 支持密码、目录递归、自动转存 |
-| 文件上传 | 小文件直传、大文件分片上传 |
-| 目录上传 | 递归上传整个目录 |
-| aria2c 加速 | 自动检测，64分块多连接下载 |
-| 断点续传 | aria2c 自动续传 |
-
-## 快速开始
-
-```python
-from baidu_pan import BaiduPanDownloader, BaiduPanUploader
-
-# === 下载 ===
-dl = BaiduPanDownloader(
-    bduss='你的BDUSS',
-    stoken='你的STOKEN',  # 可选
-)
-dl.download(
-    share_url='https://pan.baidu.com/s/1xxx',
-    password=***
-    save_dir='./downloads',
-)
-
-# === 上传文件 ===
-ul = BaiduPanUploader(bduss='你的BDUSS')
-ul.upload('./myfile.zip', '/网盘路径/myfile.zip')
-
-# === 上传目录 ===
-ul.upload_dir('./mydir', '/网盘路径/mydir/')
-```
-
-## 速度优化
-
-### 已实现的优化
-
-| 优化项 | 效果 |
-|--------|------|
-| aria2c -x16 -s64 | 64分块并行，单文件 **9MB/s** |
-| 多文件并行 | 4文件同时下载 = 4倍吞吐 |
-| HTTP优先 | 减少TLS加密开销 |
-| 持久连接 | Keep-Alive 避免重复握手 |
-| 1MB大缓冲 | 减少系统调用次数 |
-| PCS API直链 | 绕过网页层开销 |
-
-### 自定义 aria2c 参数
-
-```python
-dl = BaiduPanDownloader(
-    bduss='你的BDUSS',
-    aria2_params={
-        "max-connection-per-server": 8,  # 每服务器连接数（1-16）
-        "split": 32,                      # 分块数（越大越快）
-        "min-split-size": "2M",           # 最小块大小
-        "timeout": 120,                   # 超时时间
-    }
-)
-```
-
-**可调参数：**
-
-| 参数 | 默认值 | 范围 | 说明 |
-|------|--------|------|------|
-| `max-connection-per-server` | 16 | 1-16 | 每服务器最大连接（aria2c上限16） |
-| `split` | 64 | 1-∞ | 分块数（越大越快，无上限） |
-| `min-split-size` | 1M | 1M+ | 最小块大小 |
-| `timeout` | 60 | 秒 | 下载超时 |
-| `max-tries` | 5 | 次 | 最大重试次数 |
-
-### 速度对比
-
-| 模式 | 单文件速度 | 4文件并行 |
-|------|-----------|----------|
-| 内置引擎（无aria2） | ~90KB/s | ~360KB/s |
-| aria2c -x16 -s16 | ~200KB/s | ~800KB/s |
-| **aria2c -x16 -s64** | **~9MB/s** | **~36MB/s** |
-
-### 安装 aria2c（可选，推荐）
-
-```bash
-# Ubuntu/Debian
-sudo apt install aria2
-
-# macOS
-brew install aria2
-
-# Windows
-scoop install aria2  # 或 choco install aria2
-```
-
-安装后程序自动检测并使用 aria2c 加速。
-
-## 工作原理
-
-### 下载流程
-
-```
-1. 验证分享密码 (share/verify)
-2. 获取页面文件信息 (locals.mset)
-3. 递归获取目录内文件 (share/list)
-4. 转存到自己网盘 (share/transfer)
-5. 获取直链 (locatedownload)
-6. aria2c/内置引擎下载
-```
-
-### 上传流程
-
-```
-小文件 (<4MB): PCS API 直接上传
-大文件 (≥4MB): 预创建 → 分片上传(4MB/片) → 合并
-```
+- ✅ 登录认证 (BDUSS + STOKEN)
+- ✅ 文件列表 (ls)
+- ✅ 文件上传 (upload) - 分片上传 + 秒传检测
+- ✅ 文件下载 (download) - 断点续传
+- ✅ 速度限制 (1M/s, 10M/s, 20M/s 等精确限速)
+- ✅ 创建目录 / 删除 / 重命名
+- ✅ 分享链接转存
+- ✅ 用户信息 / 容量查询
 
 ## 依赖
 
-- Python 3.8+
-- 无第三方依赖（纯标准库）
-- aria2c（可选，推荐安装）
-
-## 文件说明
-
-```
-baidu_pan.py          ← 主程序（唯一需要的文件）
-README.md             ← 本文档
+```bash
+pip install requests
 ```
 
-## 命令行使用
+## 使用
+
+### 命令行
 
 ```bash
-# 下载测试
-python3 baidu_pan.py
+# 设置认证
+export BDUSS="你的BDUSS"
+export STOKEN="你的STOKEN"
 
-# 上传文件
-python3 baidu_pan.py upload ./file.zip /网盘路径/
+# 查看信息
+python baidupcs.py info
 
-# 上传目录
-python3 baidu_pan.py upload_dir ./dir /网盘路径/
+# 列出文件
+python baidupcs.py ls /
+python baidupcs.py ls /documents
+
+# 上传 (支持限速)
+python baidupcs.py upload ./file.txt /
+python baidupcs.py upload ./file.txt / --speed 1M    # 限速 1M/s
+python baidupcs.py upload ./file.txt / --speed 10M   # 限速 10M/s
+python baidupcs.py upload ./file.txt / --speed 20M   # 限速 20M/s
+
+# 下载 (支持限速)
+python baidupcs.py download /file.txt ./
+python baidupcs.py download /file.txt ./ --speed 1M  # 限速 1M/s
+
+# 转存分享链接
+python baidupcs.py share "https://pan.baidu.com/s/1xxx" --password abcd
+
+# 创建目录
+python baidupcs.py mkdir /newdir
+
+# 删除 / 重命名
+python baidupcs.py delete /file.txt
+python baidupcs.py rename /old.txt new.txt
 ```
 
-## 注意事项
+### 速度限制格式
 
-1. **BDUSS/STOKEN 获取**：浏览器登录百度网盘 → F12 → Application → Cookies
-2. **非VIP限速**：百度对非VIP用户有服务端限速，aria2c可部分缓解
-3. **URL有效期**：下载直链有效期约8小时，超时需重新获取
-4. **aria2c参数**：`-x16`（每服务器最大连接）`-s64`（分块数）可调整
+| 格式 | 含义 |
+|------|------|
+| `1M` 或 `1M/s` | 1 MB/s |
+| `10M` | 10 MB/s |
+| `20M` | 20 MB/s |
+| `512K` | 512 KB/s |
+| `0` 或不填 | 不限速 |
+
+### Python API
+
+```python
+from baidupcs import BaiduPCS
+
+pcs = BaiduPCS("your_bduss", "your_stoken")
+
+# 列出文件
+files = pcs.list_files("/")
+
+# 上传 (限速 10M/s)
+pcs.upload("./file.txt", "/backup/", speed_limit=10*1024*1024)
+
+# 下载 (限速 20M/s)
+pcs.download("/remote.txt", "./local/", speed_limit=20*1024*1024)
+
+# 转存分享链接
+pcs.save_share("https://pan.baidu.com/s/1xxx", "password", "/save/dir")
+```
+
+## 测试
+
+```bash
+# 限速器精度测试
+python speed_test.py
+
+# 完整功能测试
+python test_baidupcs.py
+```
+
+## 技术实现
+
+### API 端点 (来自 BaiduPCS-Go 源码分析)
+
+| 功能 | API |
+|------|-----|
+| 用户信息 | `GET pan.baidu.com/api/user/getinfo` |
+| 文件列表 | `GET pan.baidu.com/api/list` |
+| 预创建上传 | `POST pan.baidu.com/api/precreate` |
+| 分片上传 | `POST pcs.baidu.com/rest/2.0/pcs/superfile2` |
+| 合并文件 | `POST pan.baidu.com/api/create` |
+| 获取下载链接 | `POST pcs.baidu.com/rest/2.0/pcs/file?method=locatedownload` |
+| 删除文件 | `POST pan.baidu.com/api/filemanager` |
+
+### 签名算法
+
+- **locatedownload 签名**: `SHA1( SHA1(BDUSS).hex + UID + fixed_salt + timestamp + devUID )`
+- **devUID**: `MD5(BDUSS)[:40]`
+- **fixed_salt**: `ebrcUYiuxaZv2XGu7KIYKxUrqfnOpDF`
+
+### 分片策略 (与 BaiduPCS-Go 一致)
+
+| 文件大小 | 分片大小 |
+|----------|----------|
+| < 8GB | 4MB |
+| 8GB - 32GB | 16MB |
+| > 32GB | 64MB |
+
+### 限速实现
+
+令牌桶算法 (Token Bucket)，精度误差 < 1%。
