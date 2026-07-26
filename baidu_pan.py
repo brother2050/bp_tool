@@ -354,6 +354,9 @@ def aria2_download(url, out_dir, filename, bduss, params=None):
     if params:
         cfg.update(params)
     aria2_cmd = shutil.which("aria2c") or os.path.expanduser("~/bin/aria2c")
+    # ★ 关键：qdall01 只接受 PCS_UA
+    host = urlparse(url).hostname or ""
+    ua = PCS_UA if "qdall01" in host else GO_UA
     cmd = [aria2_cmd,
            "--console-log-level=warn",
            "--file-allocation=none",
@@ -363,7 +366,7 @@ def aria2_download(url, out_dir, filename, bduss, params=None):
            f"--dir={out_dir}",
            f"--out={filename}",
            f"--header=Cookie: BDUSS={bduss}",
-           f"--header=User-Agent: {GO_UA}",
+           f"--header=User-Agent: {ua}",
            url]
     for k, v in cfg.items():
         cmd.append(f"--{k}={v}")
