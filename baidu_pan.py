@@ -39,8 +39,8 @@ PAN_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
           "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 PCS_UA = "softxm;netdisk"
 
-UPLOAD_CHUNK = 4 * 1024 * 1024
-DL_BUF       = 1024 * 1024
+UPLOAD_CHUNK = 16 * 1024 * 1024   # 16MB上传分片（减少请求次数，百度最大支持32MB）
+DL_BUF       = 8 * 1024 * 1024    # 8MB读写缓冲（减少系统调用和上下文切换）
 MAX_PAR      = 1
 BURST_CHUNK  = 280 * 1024 * 1024
 
@@ -186,6 +186,8 @@ class PersistDownloader:
         self._ssl_ctx = ssl.create_default_context()
         self._conns = {}
         self._lock = threading.Lock()
+        self._pool = {}  # 连接池
+        self._pool_lock = threading.Lock()  # 连接池锁
 
     def _get_conn(self, url):
         p = urlparse(url)
@@ -211,16 +213,28 @@ class PersistDownloader:
         return conn
 
     def _do_request(self, url, headers, start_byte=None, end_byte=None):
+        # ★ 核心优化：qdall01 节点用HTTP（减少TLS开销），签名CDN保持原协议
+        p0 = urlparse(url)
+        is_qdall01 = "qdall01" in (p0.hostname or "")
+        if is_qdall01:
+            url = _http_url(url)
         p = urlparse(url)
         host = p.hostname
         port = p.port or (443 if p.scheme == "https" else 80)
         req_path = p.path + ("?"+p.query if p.query else "")
         is_https = p.scheme == "https"
 
+        # 签名CDN用短超时（10s），qdall01用长超时（60s）
+        timeout = 10 if not is_qdall01 else 60
         if is_https:
-            conn = http.client.HTTPSConnection(host, port, context=self._ssl_ctx, timeout=120)
+            conn = http.client.HTTPSConnection(host, port, context=self._ssl_ctx, timeout=timeout)
         else:
-            conn = http.client.HTTPConnection(host, port, timeout=120)
+            conn = http.client.HTTPConnection(host, port, timeout=timeout)
+
+        hdrs = dict(headers)
+        # ★ 关键：qdall01 只接受 PCS_UA，签名CDN用 GO_UA
+        if is_qdall01:
+            hdrs["User-Agent"] = PCS_UA
 
         hdrs = dict(headers)
         if start_byte is not None:
@@ -722,11 +736,19 @@ class BaiduPanUploader:
         bd = _bd(); body,ct = _mp({},{"file":(fn,data,"application/octet-stream")},bd)
         return json.loads(self.cli.post_raw(url, body, ct))
 
-    def _chunk_up(self, fp, ci, uid, rp):
-        with open(fp,"rb") as f: f.seek(ci*UPLOAD_CHUNK); ch=f.read(UPLOAD_CHUNK)
+    def _chunk_up(self, fp, ci, uid, rp, chunk_data=None):
+        """上传单个分片
+        
+        Args:
+            chunk_data: 预读的数据（如果为None则从文件读取）
+        """
+        if chunk_data is None:
+            with open(fp,"rb") as f:
+                f.seek(ci*UPLOAD_CHUNK)
+                chunk_data = f.read(UPLOAD_CHUNK)
         fn = os.path.basename(fp)
         url = f"https://d.pcs.baidu.com/rest/2.0/pcs/superfile2/upload?method=upload&app_id={PCS_APP_ID}&type=tmpfile&path={urllib.parse.quote(rp)}&uploadid={uid}&partseq={ci}"
-        bd = _bd(); body,ct = _mp({},{"file":(fn,ch,"application/octet-stream")},bd)
+        bd = _bd(); body,ct = _mp({},{"file":(fn,chunk_data,"application/octet-stream")},bd)
         return json.loads(self.cli.post_raw(url, body, ct))
 
     def _precreate(self, fp, rp):
@@ -775,11 +797,38 @@ class BaiduPanUploader:
                 if pc.get("return_type")==2: print(" ✓(秒传)"); return True
                 print(" ✗ 无uploadid"); return False
             print(" ✓")
-            bc = max(1,(sz+UPLOAD_CHUNK-1)//UPLOAD_CHUNK); bl=[]
-            print(f"    [2/3] 分片 ({bc})...")
-            for i in range(bc):
-                print(f"      {i+1}/{bc}...",end="",flush=True)
-                r = self._chunk_up(lp,i,uid,rp); bl.append(r.get("md5","")); print(" ✓")
+            bc = max(1,(sz+UPLOAD_CHUNK-1)//UPLOAD_CHUNK); bl=[None]*bc
+            # 上传并行度
+            UL_PARALLEL = 8
+            print(f"    [2/3] 并行分片 ({bc}, 并行度={UL_PARALLEL})...")
+
+            # ★ 核心优化：预读 + 并行上传分片
+            PRELOAD_BATCH = min(bc, UL_PARALLEL * 2)
+
+            def upload_chunk(ci, data):
+                r = self._chunk_up(lp, ci, uid, rp, chunk_data=data)
+                return ci, r.get("md5","")
+
+            with ThreadPoolExecutor(max_workers=UL_PARALLEL) as pool:
+                futs = {}
+                done = 0
+                for batch_start in range(0, bc, PRELOAD_BATCH):
+                    batch_end = min(batch_start + PRELOAD_BATCH, bc)
+                    batch_data = {}
+                    with open(lp, "rb") as f:
+                        for ci in range(batch_start, batch_end):
+                            f.seek(ci * UPLOAD_CHUNK)
+                            batch_data[ci] = f.read(UPLOAD_CHUNK)
+                    for ci in range(batch_start, batch_end):
+                        fut = pool.submit(upload_chunk, ci, batch_data[ci])
+                        futs[fut] = ci
+                    for fut in as_completed(futs):
+                        ci, md5 = fut.result()
+                        bl[ci] = md5
+                        done += 1
+                        print(f"\r      {done}/{bc}   ", end="", flush=True)
+                    futs.clear()
+            print(" ✓")
             print("    [3/3] 合并...",end="",flush=True)
             cr = self._create(rp,sz,uid,bl)
             if cr.get("errno",-1)==0: print(" ✓"); return True
