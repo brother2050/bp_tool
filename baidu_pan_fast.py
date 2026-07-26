@@ -41,8 +41,8 @@ MT_BUF           = 1024 * 1024        # 每线程读写缓冲 1MB
 MT_SMALL_FILE    = 20 * 1024 * 1024   # 小于此大小用单线程
 
 ARIA2_DEFAULTS = {
-    "max-connection-per-server": 32,
-    "split": 32,
+    "max-connection-per-server": 16,  # aria2c 上限是16
+    "split": 16,
     "timeout": 120,
     "retry-wait": 2,
     "max-tries": 10,
@@ -215,6 +215,22 @@ class MultiThreadDownloader:
                 resp = conn.getresponse()
         return conn, resp
 
+    def _test_range(self, url):
+        """测试URL是否支持Range请求"""
+        headers = {
+            "User-Agent": GO_UA,
+            "Cookie": f"BDUSS={self._bduss}",
+        }
+        try:
+            conn, resp = self._do_request(url, headers, 0, 1023)
+            status = resp.status
+            cr = resp.getheader("Content-Range", "")
+            resp.read()
+            conn.close()
+            return status == 206 and "bytes" in cr
+        except Exception:
+            return False
+
     def _get_total_size(self, url, headers):
         """获取文件总大小"""
         conn, resp = self._do_request(url, headers, 0, 0)
@@ -370,32 +386,74 @@ class MultiThreadDownloader:
 
     def _download_single(self, url, headers, filepath, label, total):
         """单线程下载（小文件或回退）"""
-        conn, resp = self._do_request(url, headers, 0, total - 1)
-        t0 = time.time()
-        downloaded = 0
-        last_print = t0
+        os.makedirs(os.path.dirname(filepath) or ".", exist_ok=True)
+        if os.path.exists(filepath):
+            os.remove(filepath)
 
-        with open(filepath, "wb") as f:
-            while True:
-                chunk = resp.read(MT_BUF)
-                if not chunk:
-                    break
-                f.write(chunk)
-                downloaded += len(chunk)
-                now = time.time()
-                if now - last_print >= 0.5:
-                    elapsed = now - t0
+        # 尝试不带BDUSS的请求（签名URL自带认证）
+        for use_cookie in [True, False]:
+            try:
+                h = dict(headers)
+                if not use_cookie:
+                    h.pop("Cookie", None)
+
+                p = urlparse(url)
+                is_https = p.scheme == "https"
+                if is_https:
+                    conn = http.client.HTTPSConnection(p.hostname, 443, context=self._ssl_ctx, timeout=120)
+                else:
+                    conn = http.client.HTTPConnection(p.hostname, 80, timeout=120)
+
+                req_path = p.path + ("?"+p.query if p.query else "")
+                conn.request("GET", req_path, headers=h)
+                resp = conn.getresponse()
+
+                # 处理重定向
+                if resp.status in (301, 302, 307, 308):
+                    loc = resp.getheader("Location", "")
+                    resp.read()
+                    conn.close()
+                    if loc:
+                        return self._download_single(loc, headers, filepath, label, total)
+
+                if resp.status == 403:
+                    resp.read()
+                    conn.close()
+                    continue
+
+                t0 = time.time()
+                downloaded = 0
+                last_print = t0
+
+                with open(filepath, "wb") as f:
+                    while True:
+                        chunk = resp.read(MT_BUF)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        now = time.time()
+                        if now - last_print >= 0.5:
+                            elapsed = now - t0
+                            speed = downloaded / elapsed if elapsed > 0 else 0
+                            pct = downloaded * 100 // total if total > 0 else 0
+                            print(f"\r    {label} [{pct}%] {_spd(speed)}   ",
+                                  end="", flush=True)
+                            last_print = now
+                conn.close()
+
+                # 验证下载结果
+                if downloaded > 1024:
+                    elapsed = time.time() - t0
                     speed = downloaded / elapsed if elapsed > 0 else 0
-                    pct = downloaded * 100 // total if total > 0 else 0
-                    print(f"\r    {label} [{pct}%] {_spd(speed)}   ",
-                          end="", flush=True)
-                    last_print = now
-        conn.close()
+                    print(f"\r    ✓ {label} — {_fmt(downloaded)} ({_spd(speed)})        ")
+                    return downloaded
+                # 下载内容太少，可能是错误
+                continue
+            except Exception:
+                continue
 
-        elapsed = time.time() - t0
-        speed = downloaded / elapsed if elapsed > 0 else 0
-        print(f"\r    ✓ {label} — {_fmt(downloaded)} ({_spd(speed)})        ")
-        return downloaded
+        raise Exception(f"单线程下载失败: {label}")
 
 # ============================================================
 # aria2c 调用
@@ -561,7 +619,10 @@ class BaiduPanDownloader:
             return []
 
     def _dl_url(self, path):
-        """获取直链 — BaiduPCS-Go 签名机制"""
+        """获取直链 — 返回所有可用URL列表（签名+未签名）"""
+        all_urls = []
+
+        # 1. 签名 locatedownload
         sign = _locate_sign(0, self._bduss)
         params = {
             "ant": "1", "check_blue": "1", "es": "1", "esl": "1",
@@ -579,12 +640,12 @@ class BaiduPanDownloader:
         r.add_header("Content-Type", "application/x-www-form-urlencoded")
         try:
             d = json.loads(self.cli.op.open(r, timeout=15).read())
-            urls = [u['url'] for u in d.get("urls", [])]
-            if urls:
-                return urls
+            for u in d.get("urls", []):
+                all_urls.append(u['url'])
         except Exception:
             pass
-        # 回退
+
+        # 2. 未签名 locatedownload
         for app_id in [PCS_APP_ID, PAN_APP_ID]:
             try:
                 url = (f"{PCS_BASE}/rest/2.0/pcs/file?method=locatedownload"
@@ -592,13 +653,17 @@ class BaiduPanDownloader:
                 r = urllib.request.Request(url)
                 r.add_header("User-Agent", PCS_UA)
                 r.add_header("Cookie", f"BDUSS={self._bduss}")
-                d = json.loads(self.cli.op.open(r,timeout=10).read())
-                urls = [u['url'] for u in d.get("urls",[])]
-                if urls:
-                    return urls
+                d = json.loads(self.cli.op.open(r, timeout=10).read())
+                for u in d.get("urls", []):
+                    u_url = u['url']
+                    if u_url not in all_urls:
+                        all_urls.append(u_url)
             except Exception:
                 continue
-        raise Exception("无下载链接")
+
+        if not all_urls:
+            raise Exception("无下载链接")
+        return all_urls
 
     def _mkdir(self, p):
         url = f"{PCS_BASE}/rest/2.0/pcs/file?method=mkdir&path={urllib.parse.quote(p)}&app_id={PCS_APP_ID}"
@@ -724,16 +789,34 @@ class BaiduPanDownloader:
             dl_urls, lp, sz, fn = args
             try:
                 if self._use_aria2:
-                    if aria2_download(dl_urls[0], save_dir, fn, self._bduss,
-                                      params=self._aria2_params):
-                        ok_cnt[0] += 1; return
-                    print("    回退到内置引擎...")
-                best_url = dl_urls[0]
+                    for u in dl_urls:
+                        if aria2_download(u, save_dir, fn, self._bduss,
+                                          params=self._aria2_params):
+                            ok_cnt[0] += 1; return
+                    print("    aria2c 全部失败，回退到内置引擎...")
+                # 内置引擎：逐个URL尝试
                 for u in dl_urls:
-                    if u.startswith("http://"):
-                        best_url = u; break
-                self._dl.download(best_url, lp, label=fn, size_hint=sz)
-                ok_cnt[0] += 1
+                    try:
+                        best = u
+                        if u.startswith("http://"):
+                            best = u
+                        # 先测试Range支持
+                        supports_range = self._dl._test_range(best)
+                        if supports_range and sz > MT_SMALL_FILE:
+                            self._dl.download(best, lp, label=fn, size_hint=sz)
+                        else:
+                            self._dl._download_single(best, {
+                                "User-Agent": GO_UA,
+                                "Cookie": f"BDUSS={self._bduss}",
+                                "Connection": "keep-alive",
+                            }, lp, fn, sz)
+                        # 验证下载结果
+                        if os.path.exists(lp) and os.path.getsize(lp) > 1024:
+                            ok_cnt[0] += 1; return
+                        print(f"    {fn} 下载结果异常，尝试下一个URL...")
+                    except Exception:
+                        continue
+                raise Exception("所有下载URL均失败")
             except Exception as e:
                 print(f"  ✗ [{idx}/{total}] {fn}: {e}")
 

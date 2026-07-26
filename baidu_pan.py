@@ -45,7 +45,7 @@ MAX_PAR      = 1
 BURST_CHUNK  = 280 * 1024 * 1024
 
 ARIA2_DEFAULTS = {
-    "max-connection-per-server": 16,
+    "max-connection-per-server": 16,  # aria2c 上限是16
     "split": 16,
     "timeout": 120,
     "retry-wait": 2,
@@ -498,8 +498,10 @@ class BaiduPanDownloader:
             return []
 
     def _dl_url(self, path):
-        """获取直链 — 使用 BaiduPCS-Go 签名机制获取高速节点"""
-        # ★ 核心：带签名的 locatedownload（BaiduPCS-Go 风格）
+        """获取直链 — 返回所有可用URL列表（签名+未签名）"""
+        all_urls = []
+
+        # 1. 签名 locatedownload（BaiduPCS-Go 风格，高速CDN节点）
         sign = _locate_sign(0, self._bduss)
         params = {
             "ant": "1", "check_blue": "1", "es": "1", "esl": "1",
@@ -517,13 +519,12 @@ class BaiduPanDownloader:
         r.add_header("Content-Type", "application/x-www-form-urlencoded")
         try:
             d = json.loads(self.cli.op.open(r, timeout=15).read())
-            urls = [u['url'] for u in d.get("urls", [])]
-            if urls:
-                return urls
+            for u in d.get("urls", []):
+                all_urls.append(u['url'])
         except Exception:
             pass
 
-        # 回退：无签名方式
+        # 2. 未签名 locatedownload（回退，qdall01 节点）
         for app_id in [PCS_APP_ID, PAN_APP_ID]:
             try:
                 url = (f"{PCS_BASE}/rest/2.0/pcs/file?method=locatedownload"
@@ -531,13 +532,17 @@ class BaiduPanDownloader:
                 r = urllib.request.Request(url)
                 r.add_header("User-Agent", PCS_UA)
                 r.add_header("Cookie", f"BDUSS={self._bduss}")
-                d = json.loads(self.cli.op.open(r,timeout=10).read())
-                urls = [u['url'] for u in d.get("urls",[])]
-                if urls:
-                    return urls
+                d = json.loads(self.cli.op.open(r, timeout=10).read())
+                for u in d.get("urls", []):
+                    u_url = u['url']
+                    if u_url not in all_urls:
+                        all_urls.append(u_url)
             except Exception:
                 continue
-        raise Exception("无下载链接")
+
+        if not all_urls:
+            raise Exception("无下载链接")
+        return all_urls
 
     def _mkdir(self, p):
         url = f"{PCS_BASE}/rest/2.0/pcs/file?method=mkdir&path={urllib.parse.quote(p)}&app_id={PCS_APP_ID}"
@@ -663,16 +668,34 @@ class BaiduPanDownloader:
             dl_urls, lp, sz, fn = args
             try:
                 if self._use_aria2:
-                    if aria2_download(dl_urls[0], save_dir, fn, self._bduss,
-                                      params=self._aria2_params):
-                        ok_cnt[0] += 1; return
-                    print("    回退到内置引擎...")
-                best_url = dl_urls[0]
+                    # aria2c 尝试签名URL和未签名URL
+                    for u in dl_urls:
+                        if aria2_download(u, save_dir, fn, self._bduss,
+                                          params=self._aria2_params):
+                            ok_cnt[0] += 1; return
+                    print("    aria2c 全部失败，回退到内置引擎...")
+                # 内置引擎：逐个URL尝试
                 for u in dl_urls:
-                    if u.startswith("http://"):
-                        best_url = u; break
-                self._dl.download(best_url, lp, label=fn, size_hint=sz)
-                ok_cnt[0] += 1
+                    try:
+                        # 优先HTTP
+                        best = u
+                        if u.startswith("http://"):
+                            best = u; break
+                        # 对签名URL尝试不带Cookie下载
+                        host = urlparse(u).hostname
+                        if host != "qdall01.baidupcs.com":
+                            # 签名CDN节点：尝试不带BDUSS cookie
+                            best = u
+                        self._dl.download(best, lp, label=fn, size_hint=sz)
+                        # 验证下载结果
+                        if os.path.exists(lp) and os.path.getsize(lp) > 1024:
+                            ok_cnt[0] += 1; return
+                        # 文件太小，可能是错误响应，尝试下一个URL
+                        print(f"    {fn} 下载结果异常({os.path.getsize(lp) if os.path.exists(lp) else 0}B)，尝试下一个URL...")
+                    except Exception:
+                        continue
+                # 所有URL都失败
+                raise Exception("所有下载URL均失败")
             except Exception as e:
                 print(f"  ✗ [{idx}/{total}] {fn}: {e}")
 
