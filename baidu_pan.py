@@ -213,18 +213,16 @@ class PersistDownloader:
         return conn
 
     def _do_request(self, url, headers, start_byte=None, end_byte=None):
-        # ★ 核心优化：qdall01 节点用HTTP（减少TLS开销），签名CDN保持原协议
+        # ★ 对qdall01使用PCS_UA（否则返回403）
         p0 = urlparse(url)
         is_qdall01 = "qdall01" in (p0.hostname or "")
-        if is_qdall01:
-            url = _http_url(url)
+
         p = urlparse(url)
         host = p.hostname
         port = p.port or (443 if p.scheme == "https" else 80)
         req_path = p.path + ("?"+p.query if p.query else "")
         is_https = p.scheme == "https"
 
-        # 签名CDN用短超时（10s），qdall01用长超时（60s）
         timeout = 10 if not is_qdall01 else 60
         if is_https:
             conn = http.client.HTTPSConnection(host, port, context=self._ssl_ctx, timeout=timeout)
@@ -236,7 +234,6 @@ class PersistDownloader:
         if is_qdall01:
             hdrs["User-Agent"] = PCS_UA
 
-        hdrs = dict(headers)
         if start_byte is not None:
             if end_byte is not None:
                 hdrs["Range"] = f"bytes={start_byte}-{end_byte}"
@@ -512,10 +509,28 @@ class BaiduPanDownloader:
             return []
 
     def _dl_url(self, path):
-        """获取直链 — 返回所有可用URL列表（签名+未签名）"""
+        """获取直链 — 返回所有可用URL列表（qdall01优先，签名CDN备选）"""
         all_urls = []
 
-        # 1. 签名 locatedownload（BaiduPCS-Go 风格，高速CDN节点）
+        # 1. 未签名 locatedownload（qdall01 节点，稳定可靠）
+        for app_id in [PCS_APP_ID, PAN_APP_ID]:
+            try:
+                url = (f"{PCS_BASE}/rest/2.0/pcs/file?method=locatedownload"
+                       f"&path={urllib.parse.quote(path)}&app_id={app_id}")
+                r = urllib.request.Request(url)
+                r.add_header("User-Agent", PCS_UA)
+                r.add_header("Cookie", f"BDUSS={self._bduss}")
+                d = json.loads(self.cli.op.open(r, timeout=10).read())
+                for u in d.get("urls", []):
+                    u_url = u['url']
+                    if u_url not in all_urls:
+                        all_urls.append(u_url)
+                # 排序：HTTP URL 排在 HTTPS 前面（qdall01的HTTP和HTTPS URL有不同的query参数）
+                all_urls.sort(key=lambda x: 0 if x.startswith("http://") else 1)
+            except Exception:
+                continue
+
+        # 2. 签名 locatedownload（高速CDN节点，可能不可用）
         sign = _locate_sign(0, self._bduss)
         params = {
             "ant": "1", "check_blue": "1", "es": "1", "esl": "1",
@@ -534,25 +549,11 @@ class BaiduPanDownloader:
         try:
             d = json.loads(self.cli.op.open(r, timeout=15).read())
             for u in d.get("urls", []):
-                all_urls.append(u['url'])
+                u_url = u['url']
+                if u_url not in all_urls:
+                    all_urls.append(u_url)
         except Exception:
             pass
-
-        # 2. 未签名 locatedownload（回退，qdall01 节点）
-        for app_id in [PCS_APP_ID, PAN_APP_ID]:
-            try:
-                url = (f"{PCS_BASE}/rest/2.0/pcs/file?method=locatedownload"
-                       f"&path={urllib.parse.quote(path)}&app_id={app_id}")
-                r = urllib.request.Request(url)
-                r.add_header("User-Agent", PCS_UA)
-                r.add_header("Cookie", f"BDUSS={self._bduss}")
-                d = json.loads(self.cli.op.open(r, timeout=10).read())
-                for u in d.get("urls", []):
-                    u_url = u['url']
-                    if u_url not in all_urls:
-                        all_urls.append(u_url)
-            except Exception:
-                continue
 
         if not all_urls:
             raise Exception("无下载链接")
@@ -682,33 +683,25 @@ class BaiduPanDownloader:
             dl_urls, lp, sz, fn = args
             try:
                 if self._use_aria2:
-                    # aria2c 尝试签名URL和未签名URL
                     for u in dl_urls:
                         if aria2_download(u, save_dir, fn, self._bduss,
                                           params=self._aria2_params):
                             ok_cnt[0] += 1; return
                     print("    aria2c 全部失败，回退到内置引擎...")
                 # 内置引擎：逐个URL尝试
-                for u in dl_urls:
+                for i, u in enumerate(dl_urls):
                     try:
-                        # 优先HTTP
-                        best = u
-                        if u.startswith("http://"):
-                            best = u; break
-                        # 对签名URL尝试不带Cookie下载
-                        host = urlparse(u).hostname
-                        if host != "qdall01.baidupcs.com":
-                            # 签名CDN节点：尝试不带BDUSS cookie
-                            best = u
-                        self._dl.download(best, lp, label=fn, size_hint=sz)
+                        host = urlparse(u).hostname or ""
+                        print(f"    [{i+1}/{len(dl_urls)}] 尝试 {host}...", flush=True)
+                        self._dl.download(u, lp, label=fn, size_hint=sz)
                         # 验证下载结果
-                        if os.path.exists(lp) and os.path.getsize(lp) > 1024:
+                        fsize = os.path.getsize(lp) if os.path.exists(lp) else 0
+                        if fsize > 1024:
                             ok_cnt[0] += 1; return
-                        # 文件太小，可能是错误响应，尝试下一个URL
-                        print(f"    {fn} 下载结果异常({os.path.getsize(lp) if os.path.exists(lp) else 0}B)，尝试下一个URL...")
-                    except Exception:
+                        print(f"    {fn} 下载结果异常({fsize}B)，跳过")
+                    except Exception as e:
+                        print(f"    {fn} 下载异常: {e}")
                         continue
-                # 所有URL都失败
                 raise Exception("所有下载URL均失败")
             except Exception as e:
                 print(f"  ✗ [{idx}/{total}] {fn}: {e}")
