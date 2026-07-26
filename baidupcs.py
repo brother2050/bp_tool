@@ -105,6 +105,20 @@ def generate_locate_download_sign(uid: int, bduss: str) -> dict:
 # ============================================================
 # BaiduPCS 核心客户端
 # ============================================================
+class BaiduSession(requests.Session):
+    """自定义 Session，Cookie 以 bytes 发送，绕过 latin-1 编码限制"""
+
+    def __init__(self, cookie_bytes: bytes):
+        super().__init__()
+        self._cookie_bytes = cookie_bytes
+
+    def prepare_request(self, request):
+        prepared = super().prepare_request(request)
+        if self._cookie_bytes:
+            prepared.headers["Cookie"] = self._cookie_bytes
+        return prepared
+
+
 class BaiduPCS:
     """百度网盘 Python 客户端"""
 
@@ -115,9 +129,15 @@ class BaiduPCS:
         self.uid = 0
         self._user_info = None
 
-        self.session = requests.Session()
-        self.session.cookies.set("BDUSS", bduss, domain=".baidu.com")
-        self.session.cookies.set("STOKEN", stoken, domain=".baidu.com")
+        cookies = [f"BDUSS={bduss}"]
+        try:
+            stoken.encode("ascii")
+            cookies.append(f"STOKEN={stoken}")
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            pass  # STOKEN 含非 ASCII 字符，跳过（BDUSS 足够认证）
+
+        cookie_bytes = "; ".join(cookies).encode("ascii")
+        self.session = BaiduSession(cookie_bytes)
         self.session.headers.update({
             "User-Agent": WEB_UA,
             "Referer": "https://pan.baidu.com/disk/home",
@@ -139,7 +159,9 @@ class BaiduPCS:
         r = self.session.get(url, params={"need_selfinfo": "1"}, timeout=30)
         data = r.json()
         if data.get("errno", -1) != 0:
-            raise RuntimeError(f"获取用户信息失败: {data}")
+            # 尝试不带参数
+            r = self.session.get(url, timeout=30)
+            data = r.json()
         records = data.get("records", [])
         if records:
             self.uid = records[0].get("uk", 0)
